@@ -1,0 +1,291 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  worker
+  taskgiver
+  admin
+}
+
+enum UserStatus {
+  active
+  frozen
+  banned
+}
+
+enum TransactionType {
+  deposit
+  withdrawal
+  task_reward
+  task_escrow_hold
+  task_escrow_release
+  transfer_in
+  transfer_out
+  referral_bonus
+  platform_fee
+  admin_adjustment
+}
+
+enum TransactionStatus {
+  pending
+  completed
+  failed
+  reversed
+}
+
+enum TaskStatus {
+  pending_approval
+  active
+  paused
+  completed
+  cancelled
+  rejected
+}
+
+enum ProofType {
+  text
+  image
+  link
+  screenshot
+}
+
+enum SubmissionStatus {
+  pending
+  approved
+  rejected
+}
+
+enum WithdrawalMethod {
+  ton
+  usdt_trc20
+  manual
+}
+
+enum WithdrawalStatus {
+  pending
+  approved
+  processing
+  completed
+  rejected
+}
+
+enum TransferStatus {
+  completed
+  reversed
+}
+
+enum ReferralStatus {
+  pending
+  credited
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id                String   @id @default(uuid()) @db.Uuid
+  telegramId        BigInt   @unique @map("telegram_id")
+  telegramUsername  String?  @map("telegram_username") @db.VarChar(255)
+  displayName       String?  @map("display_name") @db.VarChar(255)
+  role              UserRole @default(worker)
+  status            UserStatus @default(active)
+  referredBy        String?  @map("referred_by") @db.Uuid
+  referralCode      String   @unique @map("referral_code") @db.VarChar(20)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  referrer          User?    @relation("Referrals", fields: [referredBy], references: [id])
+  referredUsers     User[]   @relation("Referrals")
+  wallet            Wallet?
+  createdTasks      Task[]   @relation("TaskCreator")
+  submissions       TaskSubmission[] @relation("SubmissionWorker")
+  reviews           TaskSubmission[] @relation("SubmissionReviewer")
+  withdrawals       Withdrawal[] @relation("WithdrawalUser")
+  processedWithdrawals Withdrawal[] @relation("WithdrawalAdmin")
+  sentTransfers     Transfer[] @relation("TransferSender")
+  receivedTransfers Transfer[] @relation("TransferReceiver")
+  referralsGiven    Referral[] @relation("ReferralReferrer")
+  referralsReceived Referral[] @relation("ReferralReferred")
+  auditLogs         AuditLog[]
+
+  @@map("users")
+}
+
+model Wallet {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @map("user_id") @db.Uuid
+  balance         Decimal  @default(0) @db.Decimal(18, 8)
+  frozenBalance   Decimal  @default(0) @map("frozen_balance") @db.Decimal(18, 8)
+  totalEarned     Decimal  @default(0) @map("total_earned") @db.Decimal(18, 8)
+  totalWithdrawn  Decimal  @default(0) @map("total_withdrawn") @db.Decimal(18, 8)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user            User     @relation(fields: [userId], references: [id])
+  transactions    Transaction[]
+
+  @@map("wallets")
+}
+
+model Transaction {
+  id              String            @id @default(uuid()) @db.Uuid
+  walletId        String            @map("wallet_id") @db.Uuid
+  type            TransactionType
+  amount          Decimal           @db.Decimal(18, 8)
+  balanceBefore   Decimal           @map("balance_before") @db.Decimal(18, 8)
+  balanceAfter    Decimal           @map("balance_after") @db.Decimal(18, 8)
+  referenceId     String?           @map("reference_id") @db.Uuid
+  referenceType   String?           @map("reference_type") @db.VarChar(50)
+  description     String?           @db.Text
+  status          TransactionStatus @default(completed)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  metadata        Json?             @db.JsonB
+
+  // Relations
+  wallet          Wallet            @relation(fields: [walletId], references: [id])
+
+  @@index([walletId])
+  @@index([referenceId])
+  @@map("transactions")
+}
+
+model Task {
+  id                  String     @id @default(uuid()) @db.Uuid
+  creatorId           String     @map("creator_id") @db.Uuid
+  title               String     @db.VarChar(200)
+  description         String     @db.Text
+  instructions        String     @db.Text
+  proofType           ProofType  @map("proof_type")
+  rewardPerUser       Decimal    @map("reward_per_user") @db.Decimal(18, 8)
+  maxCompletions      Int        @map("max_completions")
+  currentCompletions  Int        @default(0) @map("current_completions")
+  totalBudget         Decimal    @map("total_budget") @db.Decimal(18, 8)
+  status              TaskStatus @default(pending_approval)
+  adminNotes          String?    @map("admin_notes") @db.Text
+  expiresAt           DateTime?  @map("expires_at")
+  createdAt           DateTime   @default(now()) @map("created_at")
+  updatedAt           DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  creator             User       @relation("TaskCreator", fields: [creatorId], references: [id])
+  submissions         TaskSubmission[]
+
+  @@index([status])
+  @@index([creatorId])
+  @@map("tasks")
+}
+
+model TaskSubmission {
+  id              String           @id @default(uuid()) @db.Uuid
+  taskId          String           @map("task_id") @db.Uuid
+  workerId        String           @map("worker_id") @db.Uuid
+  proofText       String?          @map("proof_text") @db.Text
+  proofImageUrl   String?          @map("proof_image_url") @db.VarChar(500)
+  proofLink       String?          @map("proof_link") @db.VarChar(500)
+  status          SubmissionStatus @default(pending)
+  reviewerId      String?          @map("reviewer_id") @db.Uuid
+  reviewedAt      DateTime?        @map("reviewed_at")
+  rejectionReason String?          @map("rejection_reason") @db.Text
+  createdAt       DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  task            Task             @relation(fields: [taskId], references: [id])
+  worker          User             @relation("SubmissionWorker", fields: [workerId], references: [id])
+  reviewer        User?            @relation("SubmissionReviewer", fields: [reviewerId], references: [id])
+
+  @@unique([taskId, workerId])
+  @@index([workerId])
+  @@map("task_submissions")
+}
+
+model Withdrawal {
+  id              String           @id @default(uuid()) @db.Uuid
+  userId          String           @map("user_id") @db.Uuid
+  amount          Decimal          @db.Decimal(18, 8)
+  method          WithdrawalMethod
+  walletAddress   String           @map("wallet_address") @db.VarChar(200)
+  status          WithdrawalStatus @default(pending)
+  adminId         String?          @map("admin_id") @db.Uuid
+  adminNotes      String?          @map("admin_notes") @db.Text
+  processedAt     DateTime?        @map("processed_at")
+  transactionHash String?          @map("transaction_hash") @db.VarChar(200)
+  createdAt       DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  user            User             @relation("WithdrawalUser", fields: [userId], references: [id])
+  admin           User?            @relation("WithdrawalAdmin", fields: [adminId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("withdrawals")
+}
+
+model Transfer {
+  id          String         @id @default(uuid()) @db.Uuid
+  senderId    String         @map("sender_id") @db.Uuid
+  receiverId  String         @map("receiver_id") @db.Uuid
+  amount      Decimal        @db.Decimal(18, 8)
+  note        String?        @db.VarChar(200)
+  status      TransferStatus @default(completed)
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  // Relations
+  sender      User           @relation("TransferSender", fields: [senderId], references: [id])
+  receiver    User           @relation("TransferReceiver", fields: [receiverId], references: [id])
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@map("transfers")
+}
+
+model Referral {
+  id          String         @id @default(uuid()) @db.Uuid
+  referrerId  String         @map("referrer_id") @db.Uuid
+  referredId  String         @map("referred_id") @db.Uuid
+  bonusAmount Decimal?       @map("bonus_amount") @db.Decimal(18, 8)
+  status      ReferralStatus @default(pending)
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  // Relations
+  referrer    User           @relation("ReferralReferrer", fields: [referrerId], references: [id])
+  referred    User           @relation("ReferralReferred", fields: [referredId], references: [id])
+
+  @@unique([referredId])
+  @@index([referrerId])
+  @@map("referrals")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorId     String   @map("actor_id") @db.Uuid
+  action      String   @db.VarChar(100)
+  targetType  String?  @map("target_type") @db.VarChar(50)
+  targetId    String?  @map("target_id") @db.Uuid
+  details     Json?    @db.JsonB
+  ipAddress   String?  @map("ip_address") @db.VarChar(45)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  actor       User     @relation(fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+model PlatformSetting {
+  key       String   @id @db.VarChar(100)
+  value     Json     @db.JsonB
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_settings")
+}
